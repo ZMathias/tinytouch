@@ -1,0 +1,66 @@
+# ----------------------------------------------------------------------
+# ESP-IDF Build & Configuration
+# ----------------------------------------------------------------------
+# Build directories (default and custom names)
+build/
+build_*_*/
+
+# Generated configuration files
+# Note: DO NOT ignore sdkconfig.defaults or sdkconfig.ci as they are meant to be tracked!
+sdkconfig
+sdkconfig.old
+
+# ----------------------------------------------------------------------
+# IDF Component Manager
+# ----------------------------------------------------------------------
+# Downloaded managed components
+managed_components/
+.component_hash
+
+# Component manager lock file
+# Note: You can comment this out and track it if you want strict version pinning for reproducible builds.
+dependencies.lock
+
+# ----------------------------------------------------------------------
+# C/C++ & CMake Caches
+# ----------------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+Makefile
+compile_commands.json
+.clangd/
+.ccls-cache/
+.cache/
+
+# ----------------------------------------------------------------------
+# Python Caches (ESP-IDF relies heavily on Python tools/pytest)
+# ----------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+pytest_embedded_log/
+
+# ----------------------------------------------------------------------
+# Logs, Reports & Output Files (e.g. from idf-ci)
+# ----------------------------------------------------------------------
+*.log
+build_summary_*.xml
+app_info_*.txt
+size_info_*.txt
+
+# ----------------------------------------------------------------------
+# IDE & OS Specific
+# ----------------------------------------------------------------------
+# VS Code
+.vscode/
+
+# CLion / JetBrains
+.idea/
+cmake-build-*/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
