@@ -16,3 +16,4 @@ dependencies:
   #   public: true
   espressif/tinyusb: '*'
   espressif/esp_tinyusb: '*'
+  abdurrahmanelrayes/r503: '*'
