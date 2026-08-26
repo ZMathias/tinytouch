@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
-#include "usb/usb_descriptors.h"
+#include "usb/usb_setup.h"
 
 static const char *TAG = "tiny_touch";
 
