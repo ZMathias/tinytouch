@@ -1,4 +1,5 @@
 #include "usb_setup.h"
+#include "ctaphid/ctaphid.h"
 
 const uint8_t hid_report_descriptor[] = {
     0x06, 0xD0, 0xF1, // Usage Page (FIDO Alliance)
@@ -59,5 +60,24 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
-    printf("CTAPHID packet received: %02X%02X%02X%02X%02X%02X%02X%02X\n", buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]);
+    parse_packet(buffer, bufsize);
 }
+
+#ifdef CONFIG_IDF_TARGET_LINUX
+void mock_usb_rx_task(void *pvParameters) {
+    uint8_t buf[64];
+
+    while (true) {
+        memset(buf, 0, sizeof(buf));
+        const ssize_t bytes_read = read(STDIN_FILENO, buf, 64);
+
+        if (bytes_read > 0) {
+            parse_packet(buf, 64);
+        } else if (bytes_read == 0) {
+            // pipe EOF
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+}
+
+#endif

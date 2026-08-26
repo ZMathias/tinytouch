@@ -16,3 +16,4 @@ dependencies:
   #   public: true
   espressif/tinyusb: '*'
   espressif/esp_tinyusb: '*'
+  espressif/cbor: ^0.6.1~4
