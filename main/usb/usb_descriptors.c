@@ -1,4 +1,4 @@
-#include "usb_descriptors.h"
+#include "usb_setup.h"
 
 const uint8_t hid_report_descriptor[] = {
     0x06, 0xD0, 0xF1, // Usage Page (FIDO Alliance)
