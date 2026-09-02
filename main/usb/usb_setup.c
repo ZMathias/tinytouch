@@ -60,7 +60,10 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
+    // timer can not interfere while parsing a packet
+    assert(xSemaphoreTake(timeout_mutex, portMAX_DELAY) == pdTRUE); // should never happen unless deadlocked
     parse_packet(buffer, bufsize);
+    xSemaphoreGive(timeout_mutex);
 }
 
 #ifdef CONFIG_IDF_TARGET_LINUX

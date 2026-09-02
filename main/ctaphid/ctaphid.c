@@ -5,7 +5,7 @@
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
+#include <sys/param.h>
 
 enum CTAPHID_STATES {
     IDLE,
@@ -13,6 +13,34 @@ enum CTAPHID_STATES {
 };
 
 const char* TAG = "CTAPHID";
+
+// ==== parse_packet() STATE VARIABLES
+static enum CTAPHID_STATES parser_state = IDLE;
+static uint32_t active_cid = 0;
+static uint8_t active_command = 0;
+static uint16_t expected_length = 0;
+static uint16_t current_offset = 0;
+static uint8_t expected_seq = 0;
+static TickType_t last_packet_time = 0;
+static uint8_t message[CTAPHID_MAX_MSG_SIZE] = {0};
+
+TimerHandle_t timeout_timer = NULL;
+
+
+bool eval_timeout() {
+    return (xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(500);
+}
+
+void packet_timeout_cb(TimerHandle_t xTimer) {
+    // start critical section
+    assert(xSemaphoreTake(timeout_mutex, portMAX_DELAY) == pdTRUE);
+    if (parser_state == ASSEMBLING && eval_timeout()) {
+        parser_state = IDLE;
+        send_error(active_cid, CTAPHID_ERR_MSG_TIMEOUT);
+    }
+    xSemaphoreGive(timeout_mutex);
+    // end critical section
+}
 
 void ctaphid_init_usb() {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
@@ -27,6 +55,17 @@ void ctaphid_init_usb() {
 #elif CONFIG_IDF_TARGET_LINUX
     xTaskCreate(mock_usb_rx_task, "mock_usb_rx_task", 4096, NULL, 5, NULL);
 #endif
+}
+
+void ctaphid_init_timeout_eval() {
+    timeout_mutex = xSemaphoreCreateMutex();
+    timeout_timer = xTimerCreate("CTAP_Packet_Timer", pdMS_TO_TICKS(500), pdTRUE, NULL, packet_timeout_cb);
+    xTimerStart(timeout_timer, 0);
+}
+
+void ctaphid_init() {
+    ctaphid_init_usb();
+    ctaphid_init_timeout_eval();
 }
 
 bool send_error(const uint32_t cid, const uint8_t cmd) {
@@ -67,15 +106,8 @@ bool send_buffer(const uint8_t *buf) {
 #endif
 }
 
-void parse_packet(uint8_t const* buf, uint16_t bufsize) {
-    static uint8_t state = IDLE;
-    static uint32_t active_cid = 0;
-    static uint8_t active_command = 0;
-    static uint16_t expected_length = 0;
-    static uint16_t current_offset = 0;
-    static uint8_t expected_seq = 0;
-    static TickType_t last_packet_time = {};
-    static uint8_t message[CTAPHID_MAX_MSG_SIZE] = {0};
+void parse_packet(uint8_t const* buf, const uint16_t bufsize) {
+    // state variables are declared at the top of the file
 
     if (buf == NULL) {
         ESP_LOGI(TAG, "NULL for buf was passed to parse_packet");
@@ -83,39 +115,75 @@ void parse_packet(uint8_t const* buf, uint16_t bufsize) {
     }
     assert(bufsize == 64); // must always be true
 
-    uint32_t curr_cid = 0;
-    memcpy(&curr_cid, buf, sizeof(curr_cid));
+    uint32_t packet_cid = 0;
+    memcpy(&packet_cid, buf, sizeof(packet_cid));
+
+    const uint8_t packet_cmd = buf[4];
 
     // if INIT byte
-    if (buf[4] & 0x80) {
-        state = ASSEMBLING;
-        active_cid = curr_cid;
+    if (packet_cmd & 0x80) {
+        if (parser_state == IDLE) {
+            // wipe state
+            parser_state = IDLE;
+            active_command = 0;
+            expected_length = 0;
+            current_offset = 0;
+            expected_seq = 0;
+            last_packet_time = 0;
+            memset(message, 0, CTAPHID_MAX_MSG_SIZE);
+        }
+        else if (parser_state == ASSEMBLING) {
+            if (active_cid == packet_cid) { // INIT override, wipe state
+                parser_state = IDLE;
+                active_command = 0;
+                expected_length = 0;
+                current_offset = 0;
+                expected_seq = 0;
+                last_packet_time = 0;
+                memset(message, 0, CTAPHID_MAX_MSG_SIZE);
+            } else { // channel hijacking protection
+                send_error(packet_cid, CTAPHID_ERR_CHANNEL_BUSY);
+                return;
+            }
+        }
+
+        active_command = packet_cmd;
+        active_cid = packet_cid;
         memcpy(&expected_length, buf + 5, sizeof(expected_length));
-        // BCNT is big-endian, swap for little endian
-        expected_length = (expected_length << 8) | (expected_length >> 8);
+        expected_length = (expected_length << 8) | (expected_length >> 8); // BCNT is big-endian, swap for little endian
 
         if (expected_length > CTAPHID_MAX_MSG_SIZE) {
             send_error(active_cid, CTAPHID_ERR_INVALID_LEN);
+            parser_state = IDLE;
             return;
         }
 
         if (expected_length <= 57) { // if the whole data fits into the INIT payload then we are not expecting CONT packets
-            state = IDLE;
+            parser_state = IDLE;
         } else {
-            last_packet_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            parser_state = ASSEMBLING; // transition state if we expect more packets
+            last_packet_time = xTaskGetTickCount();
         }
 
-        // TODO: extract command, copy BCNT bytes into message and set current_offset to the bytes copied
-        // TODO: implement INIT override. If a new INIT packet with the our current active_cid is received while in the ASSEMBLING state discard the old packet
+        // copy the message
+        const uint16_t nr_bytes_to_copy = MIN(57, expected_length);
+        assert(CTAPHID_MAX_MSG_SIZE - current_offset >= nr_bytes_to_copy);
+        memcpy(message + current_offset, buf + 7, nr_bytes_to_copy);
+        current_offset += nr_bytes_to_copy;
+        expected_length -= nr_bytes_to_copy; // update the number of remaining bytes to copy in subsequent CONT packets
     }
     else { // if CONT packet
+        // only accept packets that have the packet_cid == active_cid while assembling, everything else is dropped silently
+        if (parser_state == ASSEMBLING && active_cid == packet_cid) {
+            if (eval_timeout()) {
+                parser_state = IDLE;
+                send_error(active_cid, CTAPHID_ERR_MSG_TIMEOUT);
+                return;
+            } else {
+                last_packet_time = xTaskGetTickCount();
+            }
 
-        // TODO: check curr_cid against active CID, check if SEQ matches expected seq and copy up to 59 bytes into message + current_offset and increment offset, reset last_packet_time
-        // check timeout
-        if ((xTaskGetTickCount() * portTICK_PERIOD_MS) - last_packet_time > 500) {
-            ESP_LOGI(TAG, "CTAPHID_ERR_MSG_TIMEOUT");
-            send_error(active_cid, CTAPHID_ERR_MSG_TIMEOUT);
-            return;
+            // TODO: finish cont packet processing
         }
     }
 }

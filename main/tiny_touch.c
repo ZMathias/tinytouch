@@ -9,7 +9,7 @@ static const char *TAG = "main_task";
 void app_main(void)
 {
     ESP_LOGI(TAG, "Initializing CTAPHID USB Endpoint");
-    ctaphid_init_usb();
+    ctaphid_init();
 
     // NOLINTNEXTLINE
     while (1) {
