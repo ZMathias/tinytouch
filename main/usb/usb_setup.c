@@ -60,10 +60,19 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
-    // timer can not interfere while parsing a packet
-    assert(xSemaphoreTake(timeout_mutex, portMAX_DELAY) == pdTRUE); // should never happen unless deadlocked
-    parse_packet(buffer, bufsize);
-    xSemaphoreGive(timeout_mutex);
+    (void)instance; // silences unused param warnings
+    if (report_id != 0) return;
+    if (report_type != HID_REPORT_TYPE_OUTPUT) return;
+    if (bufsize != 64) return;
+
+    // package it into the struct
+    struct CTAP_REPORT_T report;
+    memcpy(report.buf, buffer, bufsize);
+    report.type = CTAP_EV_PACKET;
+
+    if (xQueueSend(reportQueue, &report, 0) != pdPASS) {
+        // queue full, drop
+    }
 }
 
 #ifdef CONFIG_IDF_TARGET_LINUX
@@ -75,7 +84,14 @@ void mock_usb_rx_task(void *pvParameters) {
         const ssize_t bytes_read = read(STDIN_FILENO, buf, 64);
 
         if (bytes_read > 0) {
-            parse_packet(buf, 64);
+            // package it into the struct, same as the USB callback
+            struct CTAP_REPORT_T report;
+            memcpy(report.buf, buf, sizeof(report.buf));
+            report.type = CTAP_EV_PACKET;
+
+            if (xQueueSend(reportQueue, &report, 0) != pdPASS) {
+                // queue full, drop
+            }
         } else if (bytes_read == 0) {
             // pipe EOF
             vTaskDelay(pdMS_TO_TICKS(1000));

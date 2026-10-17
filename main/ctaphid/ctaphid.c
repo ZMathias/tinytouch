@@ -1,5 +1,6 @@
 #include <sys/unistd.h>
 #include "ctaphid/ctaphid.h"
+#include "ctaphid/ctaphid_commands.h"
 #include "ctaphid/ctaphid_constants.h"
 #include "usb/usb_setup.h"
 #include "tinyusb.h"
@@ -12,34 +13,36 @@ enum CTAPHID_STATES {
     ASSEMBLING
 };
 
+#define CTAPHID_TIMEOUT_MS 500
+static TimerHandle_t timeoutTimer;
+
 const char* TAG = "CTAPHID";
+QueueHandle_t reportQueue;
 
 // ==== parse_packet() STATE VARIABLES
 static enum CTAPHID_STATES parser_state = IDLE;
 static uint32_t active_cid = 0;
 static uint8_t active_command = 0;
-static uint16_t expected_length = 0;
+static uint16_t remaining = 0;
 static uint16_t current_offset = 0;
 static uint8_t expected_seq = 0;
-static TickType_t last_packet_time = 0;
 static uint8_t message[CTAPHID_MAX_MSG_SIZE] = {0};
 
-TimerHandle_t timeout_timer = NULL;
-
-
-bool eval_timeout() {
-    return (xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(500);
+static void ctaphid_timeout_cb(TimerHandle_t xTimer) {
+    (void)xTimer;
+    struct CTAP_REPORT_T report;
+    report.type = CTAP_EV_TIMEOUT;
+    xQueueSend(reportQueue, &report, 0);
 }
 
-void packet_timeout_cb(TimerHandle_t xTimer) {
-    // start critical section
-    assert(xSemaphoreTake(timeout_mutex, portMAX_DELAY) == pdTRUE);
-    if (parser_state == ASSEMBLING && eval_timeout()) {
-        parser_state = IDLE;
-        send_error(active_cid, CTAPHID_ERR_MSG_TIMEOUT);
-    }
-    xSemaphoreGive(timeout_mutex);
-    // end critical section
+void ctaphid_timer_init(void) {
+    timeoutTimer = xTimerCreate(
+        "ctaphid_timeout_timer",
+        pdMS_TO_TICKS(CTAPHID_TIMEOUT_MS),
+        pdFALSE,
+        NULL,
+        ctaphid_timeout_cb);
+    configASSERT(timeoutTimer);
 }
 
 void ctaphid_init_usb() {
@@ -57,15 +60,9 @@ void ctaphid_init_usb() {
 #endif
 }
 
-void ctaphid_init_timeout_eval() {
-    timeout_mutex = xSemaphoreCreateMutex();
-    timeout_timer = xTimerCreate("CTAP_Packet_Timer", pdMS_TO_TICKS(500), pdTRUE, NULL, packet_timeout_cb);
-    xTimerStart(timeout_timer, 0);
-}
-
 void ctaphid_init() {
+    ctaphid_timer_init();
     ctaphid_init_usb();
-    ctaphid_init_timeout_eval();
 }
 
 bool send_error(const uint32_t cid, const uint8_t cmd) {
@@ -74,7 +71,7 @@ bool send_error(const uint32_t cid, const uint8_t cmd) {
 }
 
 bool send_init(const uint32_t cid, const uint8_t cmd, const uint8_t *buf, const uint16_t bufsize) {
-    if (bufsize > 57 || (buf == NULL && bufsize > 0)) {
+    if (bufsize > CTAPHID_INIT_PAYLOAD_SIZE || (buf == NULL && bufsize > 0)) {
         return false;
     }
 
@@ -106,84 +103,125 @@ bool send_buffer(const uint8_t *buf) {
 #endif
 }
 
-void parse_packet(uint8_t const* buf, const uint16_t bufsize) {
-    // state variables are declared at the top of the file
+// Clear all transaction state. Used to begin or abort a transaction.
+static void reset_parser_state(void) {
+    parser_state = IDLE;
+    active_cid = 0;
+    active_command = 0;
+    remaining = 0;
+    current_offset = 0;
+    expected_seq = 0;
+    memset(message, 0, sizeof(message));
+}
 
-    if (buf == NULL) {
-        ESP_LOGI(TAG, "NULL for buf was passed to parse_packet");
+// Abort the transaction in progress: stop the timeout and report the error on the active channel.
+static void abort_transaction(const uint8_t err) {
+    xTimerStop(timeoutTimer, 0);
+    send_error(active_cid, err);
+    reset_parser_state();
+}
+
+void parse_packet(const struct CTAP_REPORT_T * const report) {
+    // state variables are declared at the top of the file
+    if (report == nullptr) {
+        ESP_LOGI(TAG, "nullptr was passed to parse_packet");
         return;
     }
-    assert(bufsize == 64); // must always be true
+
+    if (report->type == CTAP_EV_TIMEOUT) {
+        if (parser_state == IDLE) return;              // transaction already finished
+        if (xTimerIsTimerActive(timeoutTimer)) return; // a packet re-armed the timer, this event is stale
+
+        abort_transaction(CTAPHID_ERR_MSG_TIMEOUT);
+        return;
+    }
 
     uint32_t packet_cid = 0;
-    memcpy(&packet_cid, buf, sizeof(packet_cid));
+    memcpy(&packet_cid, report->buf, sizeof(packet_cid));
 
-    const uint8_t packet_cmd = buf[4];
+    const uint8_t packet_cmd = report->buf[4];
 
     // if INIT byte
-    if (packet_cmd & 0x80) {
+    if (packet_cmd & CTAPHID_TYPE_INIT) {
         if (parser_state == IDLE) {
-            // wipe state
-            parser_state = IDLE;
-            active_command = 0;
-            expected_length = 0;
-            current_offset = 0;
-            expected_seq = 0;
-            last_packet_time = 0;
-            memset(message, 0, CTAPHID_MAX_MSG_SIZE);
+            reset_parser_state();
         }
         else if (parser_state == ASSEMBLING) {
-            if (active_cid == packet_cid) { // INIT override, wipe state
-                parser_state = IDLE;
-                active_command = 0;
-                expected_length = 0;
-                current_offset = 0;
-                expected_seq = 0;
-                last_packet_time = 0;
-                memset(message, 0, CTAPHID_MAX_MSG_SIZE);
-            } else { // channel hijacking protection
+            if (active_cid == packet_cid) { // INIT override: restart the transaction on this channel
+                reset_parser_state();
+            } else { // channel hijacking protection: leave the in-flight transaction untouched
                 send_error(packet_cid, CTAPHID_ERR_CHANNEL_BUSY);
                 return;
             }
         }
 
-        active_command = packet_cmd;
+        active_command = packet_cmd; // raw wire byte, bit7 = INIT, matches the CTAPHID_CMD_* constants
         active_cid = packet_cid;
-        memcpy(&expected_length, buf + 5, sizeof(expected_length));
-        expected_length = (expected_length << 8) | (expected_length >> 8); // BCNT is big-endian, swap for little endian
+        memcpy(&remaining, report->buf + 5, sizeof(remaining));
+        remaining = (remaining << 8) | (remaining >> 8); // BCNT is big-endian, swap for little endian
 
-        if (expected_length > CTAPHID_MAX_MSG_SIZE) {
-            send_error(active_cid, CTAPHID_ERR_INVALID_LEN);
-            parser_state = IDLE;
+        if (remaining > CTAPHID_MAX_MSG_SIZE) {
+            abort_transaction(CTAPHID_ERR_INVALID_LEN);
             return;
         }
 
-        if (expected_length <= 57) { // if the whole data fits into the INIT payload then we are not expecting CONT packets
+        if (remaining <= CTAPHID_INIT_PAYLOAD_SIZE) { // whole payload fits in the INIT packet, no CONT expected
             parser_state = IDLE;
         } else {
             parser_state = ASSEMBLING; // transition state if we expect more packets
-            last_packet_time = xTaskGetTickCount();
         }
 
         // copy the message
-        const uint16_t nr_bytes_to_copy = MIN(57, expected_length);
-        assert(CTAPHID_MAX_MSG_SIZE - current_offset >= nr_bytes_to_copy);
-        memcpy(message + current_offset, buf + 7, nr_bytes_to_copy);
+        const uint16_t nr_bytes_to_copy = MIN(CTAPHID_INIT_PAYLOAD_SIZE, remaining);
+        // runtime bound: assert() is compiled out under NDEBUG, so keep a real check.
+        if (nr_bytes_to_copy > CTAPHID_MAX_MSG_SIZE - current_offset) {
+            abort_transaction(CTAPHID_ERR_OTHER);
+            return;
+        }
+        memcpy(message + current_offset, report->buf + 7, nr_bytes_to_copy);
         current_offset += nr_bytes_to_copy;
-        expected_length -= nr_bytes_to_copy; // update the number of remaining bytes to copy in subsequent CONT packets
+        remaining -= nr_bytes_to_copy; // update the number of remaining bytes to copy in subsequent CONT packets
+
+        if (parser_state == IDLE) {
+            // the INIT packet was the sole packet, transaction complete -> disarm the timeout
+            xTimerStop(timeoutTimer, 0);
+            ctaphid_execute_command(active_cid, active_command, message, current_offset);
+        } else {
+            // more fragments expected -> arm the timeout
+            xTimerReset(timeoutTimer, 0);
+        }
     }
     else { // if CONT packet
-        // only accept packets that have the packet_cid == active_cid while assembling, everything else is dropped silently
+        // only accept packets for the active channel while assembling, everything else is dropped silently
         if (parser_state == ASSEMBLING && active_cid == packet_cid) {
-            if (eval_timeout()) {
-                parser_state = IDLE;
-                send_error(active_cid, CTAPHID_ERR_MSG_TIMEOUT);
+            const uint8_t packet_seq = report->buf[4]; // CONT byte 4 carries the sequence number (bit7 reserved, always 0)
+
+            if (packet_seq != expected_seq) { // dropped, reordered or duplicated fragment
+                abort_transaction(CTAPHID_ERR_INVALID_SEQ);
                 return;
-            } else {
-                last_packet_time = xTaskGetTickCount();
             }
 
-            // TODO: finish cont packet processing
+            // copy the payload (CONT header is 5 bytes: 4 CID + 1 SEQ)
+            const uint16_t nr_bytes_to_copy = MIN(CTAPHID_CONT_PAYLOAD_SIZE, remaining);
+            // runtime bound: assert() is compiled out under NDEBUG, so keep a real check.
+            if (nr_bytes_to_copy > CTAPHID_MAX_MSG_SIZE - current_offset) {
+                abort_transaction(CTAPHID_ERR_OTHER);
+                return;
+            }
+            memcpy(message + current_offset, report->buf + 5, nr_bytes_to_copy);
+            current_offset += nr_bytes_to_copy;
+            remaining -= nr_bytes_to_copy;
+            expected_seq++;
+
+            if (remaining == 0) {
+                // last fragment, message complete -> disarm the timeout, keep the message for dispatch
+                xTimerStop(timeoutTimer, 0);
+                parser_state = IDLE;
+                ctaphid_execute_command(active_cid, active_command, message, current_offset);
+            } else {
+                // more fragments expected -> (re)arm the timeout for the next CONT packet
+                xTimerReset(timeoutTimer, 0);
+            }
         }
     }
 }
