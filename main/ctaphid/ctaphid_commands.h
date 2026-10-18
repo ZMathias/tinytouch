@@ -14,4 +14,6 @@
  *   data - reassembled payload
  *   len  - payload length in bytes
  */
+bool touch_cid(uint32_t cid);
 void ctaphid_execute_command(uint32_t cid, uint8_t cmd, const uint8_t *data, uint16_t len);
+

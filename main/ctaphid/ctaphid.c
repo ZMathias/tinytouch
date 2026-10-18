@@ -112,6 +112,7 @@ static void reset_parser_state(void) {
     current_offset = 0;
     expected_seq = 0;
     memset(message, 0, sizeof(message));
+    xTimerStop(timeoutTimer, 0);
 }
 
 // Abort the transaction in progress: stop the timeout and report the error on the active channel.
@@ -173,7 +174,7 @@ void parse_packet(const struct CTAP_REPORT_T * const report) {
 
         // copy the message
         const uint16_t nr_bytes_to_copy = MIN(CTAPHID_INIT_PAYLOAD_SIZE, remaining);
-        // runtime bound: assert() is compiled out under NDEBUG, so keep a real check.
+
         if (nr_bytes_to_copy > CTAPHID_MAX_MSG_SIZE - current_offset) {
             abort_transaction(CTAPHID_ERR_OTHER);
             return;
