@@ -119,7 +119,7 @@ void ctaphid_cmd_init(uint32_t cid, const uint8_t *data, uint16_t len) {
     };
 
     memcpy(resp.nonce, data, len);
-    send_init(CTAPHID_CMD_INIT, cid, (uint8_t*)&resp, sizeof(resp));
+    send_init(cid, CTAPHID_CMD_INIT, (uint8_t*)&resp, sizeof(resp));
 }
 
 void ctaphid_cmd_ping(uint32_t cid, const uint8_t *data, uint16_t len) {

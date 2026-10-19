@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
-#include "driver/gpio.h"
 #include "ctaphid/ctaphid.h"
 #include "esp_log.h"
 
