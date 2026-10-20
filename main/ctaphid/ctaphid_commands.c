@@ -1,5 +1,4 @@
 #include <stddef.h>
-#include <stdbool.h>
 #include "ctaphid/ctaphid_commands.h"
 #include "ctaphid/ctaphid.h"
 #include "ctaphid/ctaphid_constants.h"
@@ -8,15 +7,16 @@
 
 static const char *TAG = "CTAPHID_CMD";
 
-struct {
+static struct {
     uint32_t cid;
     int64_t last_used;
 } active_cids[16] = {};
-const uint8_t active_cids_len = sizeof(active_cids) / sizeof(active_cids[0]);
-uint32_t next_cid = 1;
+
+static constexpr int8_t active_cids_len = sizeof(active_cids) / sizeof(active_cids[0]);
+static uint32_t next_cid = 1;
 
 // allocates the next free CID slot or evicts according to LRU
-bool reserve_cid(const uint32_t req_cid) {
+static bool reserve_cid(const uint32_t req_cid) {
     if (req_cid == 0 || req_cid == 0xFFFFFFFF) return false;
 
     int8_t free_idx = -1;
@@ -51,8 +51,7 @@ bool reserve_cid(const uint32_t req_cid) {
 }
 
 
-
-bool search_alloc_cid(const uint32_t cid, uint8_t *idx) {
+static bool search_alloc_cid(const uint32_t cid, uint8_t *idx) {
     if (idx == nullptr) return false;
 
     for (uint8_t i = 0; i < active_cids_len; i++) {
@@ -75,7 +74,7 @@ bool touch_cid(const uint32_t cid) {
     return true;
 }
 
-void ctaphid_cmd_init(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_init(uint32_t cid, const uint8_t *data, uint16_t len) {
     if (len != 8) { // if BCNT is not 8
         send_error(cid, CTAPHID_ERR_INVALID_LEN);
         return;
@@ -122,43 +121,40 @@ void ctaphid_cmd_init(uint32_t cid, const uint8_t *data, uint16_t len) {
     send_init(cid, CTAPHID_CMD_INIT, (uint8_t*)&resp, sizeof(resp));
 }
 
-void ctaphid_cmd_ping(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_ping(uint32_t cid, const uint8_t *data, uint16_t len) {
     (void)cid; (void)data; (void)len;
     ESP_LOGD(TAG, "TODO: CTAPHID_PING (0x%02X)", CTAPHID_CMD_PING);
 }
 
-void ctaphid_cmd_msg(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_msg(uint32_t cid, const uint8_t *data, uint16_t len) {
     (void)cid; (void)data; (void)len;
     ESP_LOGD(TAG, "TODO: CTAPHID_MSG (0x%02X)", CTAPHID_CMD_MSG);
 }
 
-void ctaphid_cmd_lock(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_lock(uint32_t cid, const uint8_t *data, uint16_t len) {
     (void)cid; (void)data; (void)len;
     ESP_LOGD(TAG, "TODO: CTAPHID_LOCK (0x%02X)", CTAPHID_CMD_LOCK);
 }
 
-void ctaphid_cmd_wink(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_wink(uint32_t cid, const uint8_t *data, uint16_t len) {
     (void)cid; (void)data; (void)len;
     ESP_LOGD(TAG, "TODO: CTAPHID_WINK (0x%02X)", CTAPHID_CMD_WINK);
 }
 
-void ctaphid_cmd_cbor(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_cbor(uint32_t cid, const uint8_t *data, uint16_t len) {
     (void)cid; (void)data; (void)len;
     ESP_LOGD(TAG, "TODO: CTAPHID_CBOR (0x%02X)", CTAPHID_CMD_CBOR);
 }
 
-void ctaphid_cmd_cancel(uint32_t cid, const uint8_t *data, uint16_t len) {
+static void ctaphid_cmd_cancel(uint32_t cid, const uint8_t *data, uint16_t len) {
     (void)cid; (void)data; (void)len;
     ESP_LOGD(TAG, "TODO: CTAPHID_CANCEL (0x%02X)", CTAPHID_CMD_CANCEL);
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
 
 typedef void (*ctaphid_cmd_handler_t)(uint32_t cid, const uint8_t *data, uint16_t len);
 
-const struct {
+static const struct {
     uint8_t cmd;
     ctaphid_cmd_handler_t handler;
 } command_table[] = {

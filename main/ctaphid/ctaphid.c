@@ -16,7 +16,7 @@ enum CTAPHID_STATES {
 #define CTAPHID_TIMEOUT_MS 500
 static TimerHandle_t timeoutTimer;
 
-const char* TAG = "CTAPHID";
+static const char* TAG = "CTAPHID";
 QueueHandle_t reportQueue;
 
 // ==== parse_packet() STATE VARIABLES
@@ -35,7 +35,7 @@ static void ctaphid_timeout_cb(TimerHandle_t xTimer) {
     xQueueSend(reportQueue, &report, 0);
 }
 
-void ctaphid_timer_init(void) {
+static void ctaphid_timer_init() {
     timeoutTimer = xTimerCreate(
         "ctaphid_timeout_timer",
         pdMS_TO_TICKS(CTAPHID_TIMEOUT_MS),
@@ -45,7 +45,7 @@ void ctaphid_timer_init(void) {
     configASSERT(timeoutTimer);
 }
 
-void ctaphid_init_usb() {
+static void ctaphid_init_usb() {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
     tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
     tusb_cfg.descriptor.full_speed_config = configuration_descriptor;
@@ -103,8 +103,7 @@ bool send_buffer(const uint8_t *buf) {
 #endif
 }
 
-// Clear all transaction state. Used to begin or abort a transaction.
-static void reset_parser_state(void) {
+static void reset_parser_state() {
     parser_state = IDLE;
     active_cid = 0;
     active_command = 0;

@@ -5,7 +5,7 @@
 
 static const char *TAG = "main_task";
 
-void ctap_task_loop(void *pvParameters) {
+static void ctap_task_loop(void *pvParameters) {
     struct CTAP_REPORT_T report;
     while (1) {
         if (xQueueReceive(reportQueue, &report, portMAX_DELAY) == pdPASS) {
@@ -15,7 +15,7 @@ void ctap_task_loop(void *pvParameters) {
     }
 }
 
-void app_main(void)
+void app_main()
 {
     ESP_LOGI(TAG, "Initializing CTAPHID USB Endpoint");
     // set up message queue then initialize usb stack and then ctap parser task
